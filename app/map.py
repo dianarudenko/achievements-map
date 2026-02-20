@@ -157,7 +157,7 @@ def color(obj: MapObjectInfo, color: str) -> MapObjectInfo:
 star = MapObjectInfo(MapTag.STAR)
 P = MapObjectInfo(MapTag.RHOMB)
 big_P = MapObjectInfo(MapTag.BIG_RHOMB, bold=True, color="#FFD818")
-K = MapObjectInfo(MapTag.SQUARE)
+K = MapObjectInfo(MapTag.SQUARE, bold=True)
 h_path = MapObjectInfo(MapTag.H_PATH)
 v_path = MapObjectInfo(MapTag.V_PATH)
 start = MapObjectInfo(MapTag.START)

@@ -22,7 +22,7 @@ SPRITES_PATH = os.path.join(
 )
 
 TILE_SIZE = 32
-BACKGROUND_COLOR = "#999999" # "#7BA24E"
+BACKGROUND_COLOR = "#7BA24E"  # "#999999"
 DEFAULT_BASE_COLOR = "#FFFFCF"
 DEFAULT_PATH_COLOR = "#FFE580"
 
@@ -33,7 +33,7 @@ class ArrowPosition(str, Enum):
     END = "last"
     BOTH = "both"
 
-class CanvasTags(str, Enum):
+class CanvasTag(str, Enum):
     TEXT_BACKGROUND = "text_background"
     TEXT = "text"
     BASE = "base"
@@ -51,12 +51,23 @@ class CanvasObjectInfo:
 class CanvasObject:
     DEFAULT_WIDTH = 2
     BOLD_WIDTH = 3
+    canvas_tag = CanvasTag.BASE
 
     def _put_on_canvas(self, canvas: tk.Canvas, objects: list[CanvasObjectInfo]):
         for item in objects:
+            if "tags" in item.params:
+                tags = item.params["tags"]
+                if not isinstance(tags, str):
+                    tags_set = set(tags)
+                    tags_set.add(self.canvas_tag)
+                    tags = tuple(tags_set)
+                del item.params["tags"]
+            else:
+                tags = self.canvas_tag
             item_id = item.creation_function(
                 *item.coords,
                 **item.params,
+                tags=tags,
             )
             if item.caption is not None:
                 tmp = canvas.bbox(item_id)
@@ -85,17 +96,27 @@ class CanvasObject:
                         start_y = (top_left_y + bottom_right_y) / 2
                         anchor = tk.CENTER
                 for part in item.caption.contents[::direction]:
+                    if "tags" in part.extra_params:
+                        tags = part.extra_params["tags"]
+                        if not isinstance(tags, str):
+                            tags_set = set(tags)
+                            tags_set.add(self.canvas_tag)
+                            tags = tuple(tags_set)
+                        del part.extra_params["tags"]
+                    else:
+                        tags = CanvasTag.TEXT
                     text_id = canvas.create_text(
                         start_x,
                         start_y,
                         anchor=anchor,
                         text=part.text,
                         justify="center",
+                        tags=tags,
                         **part.extra_params,
                     )
                     cur_bbox = canvas.bbox(text_id)
                     if part.boxed:
-                        canvas.create_rectangle(*cur_bbox)
+                        canvas.create_rectangle(*cur_bbox, tags=CanvasTag.TEXT_BACKGROUND)
                     if part.arrowed:
                         canvas.create_line(
                             cur_bbox[0],
@@ -103,6 +124,7 @@ class CanvasObject:
                             cur_bbox[2],
                             cur_bbox[1],
                             arrow="first" if part.arrowed == "left" else "last",
+                            tags=CanvasTag.TEXT,
                         )
                     start_x = cur_bbox[0] if direction < 0 else cur_bbox[2]
 
@@ -193,6 +215,7 @@ class TagsRegistry:
 class Connection(CanvasObject):
     DEFAULT_WIDTH = 8
     BOLD_WIDTH = 16
+    canvas_tag = CanvasTag.PATH
 
     def __init__(
         self,
@@ -509,12 +532,9 @@ class BigRhombBase(RhombBase):
 
 @TagsRegistry.connect_to(map.MapTag.SQUARE, init_params={"color": DEFAULT_BASE_COLOR})
 class SquareBase(CanvasObject):
-    DEFAULT_WIDTH = 3
-
-    def __init__(self, color: str, prefix: str = "K", bold: bool = True):
+    def __init__(self, color: str, prefix: str = "K"):
         self.prefix = prefix
         self.color = color
-        self.bold = bold
 
     def put_on_canvas(
         self,
@@ -525,20 +545,6 @@ class SquareBase(CanvasObject):
     ):
         if "fill" not in extra_params:
             extra_params["fill"] = self.color
-        if caption is not None:
-            new_caption = map.CaptionInfo(
-                contents=[
-                    map.TextParams(
-                        text=t.text,
-                        boxed=t.boxed,
-                        arrowed=t.arrowed,
-                    )
-                    for t in caption
-                ],
-                relative_pos="center",
-            )
-        else:
-            new_caption = None
         self._put_on_canvas(
             canvas=canvas,
             objects=[
@@ -551,7 +557,10 @@ class SquareBase(CanvasObject):
                         coords[1] + TILE_SIZE,
                     ],
                     params=extra_params,
-                    caption=new_caption
+                    caption=map.CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
                 ),
             ],
         )
@@ -833,8 +842,11 @@ class ScrollableCanvas(ResizableWidget):
         self.y_scroll.focus()
         self.widget['yscrollcommand'] = self.y_scroll.set
 
-def parse_and_put_on_canvas(cell: str):
-    pass
+def sort_canvas_objects(canvas: tk.Canvas):
+    canvas.tag_raise(CanvasTag.PATH)
+    canvas.tag_raise(CanvasTag.BASE)
+    canvas.tag_raise(CanvasTag.TEXT_BACKGROUND)
+    canvas.tag_raise(CanvasTag.TEXT)
 
 if __name__ == "__main__":
     root = tk.Tk()
@@ -862,5 +874,7 @@ if __name__ == "__main__":
     for i, row in enumerate(MAP):
         for j, cell in enumerate(row):
             TagsRegistry.parse_cell_and_put_on_canvas(cell)
+
+    sort_canvas_objects(canvas.widget)
 
     root.mainloop()
