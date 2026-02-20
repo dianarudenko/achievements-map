@@ -3,12 +3,11 @@ from dataclasses import dataclass
 from enum import Enum
 import math
 import os
-import re
 import tkinter as tk
 from tkinter import ttk
 import sys
 from tkinter.font import Font
-from typing import Any, Callable, Type
+from typing import Any, Callable, Literal, Type
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
@@ -25,6 +24,7 @@ SPRITES_PATH = os.path.join(
 TILE_SIZE = 32
 BACKGROUND_COLOR = "#999999" # "#7BA24E"
 DEFAULT_BASE_COLOR = "#FFFFCF"
+DEFAULT_PATH_COLOR = "#FFE580"
 
 HALF_TILE = TILE_SIZE / 2
 
@@ -33,86 +33,86 @@ class ArrowPosition(str, Enum):
     END = "last"
     BOTH = "both"
 
+class CanvasTags(str, Enum):
+    TEXT_BACKGROUND = "text_background"
+    TEXT = "text"
+    BASE = "base"
+    PATH = "path"
+
 
 @dataclass
 class CanvasObjectInfo:
     creation_function: Callable
     coords: list[float]
     params: dict[str, Any]
+    caption: map.CaptionInfo | None
 
 
 class CanvasObject:
     DEFAULT_WIDTH = 2
     BOLD_WIDTH = 3
 
-    def __init__(
-        self,
-        default_params: dict[str, Any] | None = None,
-        default_caption_params: dict[str, Any] | None = None,
-    ):
-        self.default_params = default_params or {}
-        self.default_caption_params = default_caption_params or {}
-
-    def _put_on_canvas(
-        self,
-        canvas: tk.Canvas,
-        coords: tuple[int, int],
-        objects: list[CanvasObjectInfo],
-        text: str | None = None,
-        text_params: dict | None = None,
-        size: tuple[int, int] = (1, 1),
-    ):
-        # if color is not None:
-        #     create_params: dict[str, Any] = {
-        #         "fill": self.color,
-        #         "width": self.BOLD_WIDTH,
-        #         "outline": color,
-        #     }
-        #     text_params: dict[str, Any] = {
-        #         "fill": color,
-        #         "font": Font(weight="bold"),
-        #     }
-        # elif bold:
-        #     create_params = {
-        #         "fill": self.color,
-        #         "width": self.BOLD_WIDTH,
-        #     }
-        #     text_params = {"font": Font(weight="bold")}
-        # else:
-        #     create_params = {
-        #         "fill": self.color,
-        #         "width": self.DEFAULT_WIDTH,
-        #     }
-        #     text_params = {}
+    def _put_on_canvas(self, canvas: tk.Canvas, objects: list[CanvasObjectInfo]):
         for item in objects:
-            params = self.default_params.copy()
-            params.update(item.params)
-            item.creation_function(
+            item_id = item.creation_function(
                 *item.coords,
-                **params,
+                **item.params,
             )
-        if text is not None:
-            center_x = coords[0] + HALF_TILE * size[0]
-            center_y = coords[1] + HALF_TILE * size[1]
-            params = self.default_caption_params.copy()
-            if text_params:
-                params.update(text_params)
-            canvas.create_text(
-                center_x,
-                center_y,
-                text=text,
-                justify="center",
-                **params,
-            )
+            if item.caption is not None:
+                tmp = canvas.bbox(item_id)
+                top_left_x, top_left_y, bottom_right_x, bottom_right_y = tmp
+                direction: Literal[1, -1] = 1
+                match item.caption.relative_pos:
+                    case "right":
+                        start_x = bottom_right_x
+                        start_y = (top_left_y + bottom_right_y) / 2
+                        anchor = tk.W
+                    case "left":
+                        start_x = top_left_x
+                        start_y = (top_left_y + bottom_right_y) / 2
+                        anchor = tk.E
+                        direction = -1
+                    case "up":
+                        start_x = (top_left_x + bottom_right_x) / 2
+                        start_y = top_left_y
+                        anchor = tk.S
+                    case "down":
+                        start_x = (top_left_x + bottom_right_x) / 2
+                        start_y = bottom_right_y
+                        anchor = tk.N
+                    case "center":
+                        start_x = (top_left_x + bottom_right_x) / 2
+                        start_y = (top_left_y + bottom_right_y) / 2
+                        anchor = tk.CENTER
+                for part in item.caption.contents[::direction]:
+                    text_id = canvas.create_text(
+                        start_x,
+                        start_y,
+                        anchor=anchor,
+                        text=part.text,
+                        justify="center",
+                        **part.extra_params,
+                    )
+                    cur_bbox = canvas.bbox(text_id)
+                    if part.boxed:
+                        canvas.create_rectangle(*cur_bbox)
+                    if part.arrowed:
+                        canvas.create_line(
+                            cur_bbox[0],
+                            cur_bbox[1],
+                            cur_bbox[2],
+                            cur_bbox[1],
+                            arrow="first" if part.arrowed == "left" else "last",
+                        )
+                    start_x = cur_bbox[0] if direction < 0 else cur_bbox[2]
 
     @abstractmethod
     def put_on_canvas(
         self,
         canvas: tk.Canvas,
         coords: tuple[int, int],
-        text: str | None = None,
-        params: dict[str, Any] | None = None,
-        text_params: dict[str, Any] | None = None,
+        extra_params: dict[str, Any],
+        caption: list[map.TextParams] | None,
     ):
         pass
 
@@ -124,7 +124,7 @@ class TagsRegistry:
         init_params: dict[str, Any]
         object: CanvasObject | None = None
     
-    default_tag = map.BASE
+    default_tag = map.MapTag.BASE
     tag_to_object: dict[str, ObjectInfo] = {}
 
     @classmethod
@@ -156,86 +156,77 @@ class TagsRegistry:
         return object_info.object
     
     @classmethod
-    def parse_cell_and_put_on_canvas(cls, cell: str | None):
+    def parse_cell_and_put_on_canvas(cls, cell: Literal[""] | None | map.MapObjectInfo):
         if cell:
             topleft_x = TILE_SIZE * j
             topleft_y = TILE_SIZE * i
             object_params = {}
             caption_params = {}
-            text = cell
             bold = False
-            if cell.startswith(map.BOLD):
-                text = text.lstrip(map.BOLD)
+            if cell.bold:
                 bold = True
             else:
                 object_params["width"] = CanvasObject.DEFAULT_WIDTH
-            color_match = re.match(r"(.+?)#(#?\w+)", text, flags=re.I)
-            if color_match is not None:
-                color = color_match.group(2)
-                object_params["outline"] = color
-                caption_params["fill"] = color
-                text = color_match.group(1)
+            if cell.color is not None:
+                object_params["outline"] = cell.color
+                caption_params["fill"] = cell.color
                 bold = True
-            parts = text.split("_")
-            if len(parts) > 2:
-                tag = parts[1]
-                value = parts[2]
-            else:
-                tag = text
-                value = text
-            item = cls._get_object(tag)
+            item = cls._get_object(cell.tag)
             if item is not None:
                 if bold:
                     object_params["width"] = item.BOLD_WIDTH
                     caption_params["font"] = Font(weight="bold")
                 else:
                     object_params["width"] = item.DEFAULT_WIDTH
+                object_params.update(cell.extra_params)
+                if cell.caption is not None:
+                    for part in cell.caption:
+                        part.extra_params.update(caption_params)
                 item.put_on_canvas(
                     canvas=canvas.widget,
                     coords=(topleft_x, topleft_y),
-                    text=value,
-                    params=object_params,
-                    text_params=caption_params,
+                    extra_params=object_params,
+                    caption=cell.caption,
                 )
 
 
 class Connection(CanvasObject):
     DEFAULT_WIDTH = 8
-    PATH_COLOR = "#FFE580"
     BOLD_WIDTH = 16
 
     def __init__(
         self,
         points: list[tuple[float, float]],
+        color: str = DEFAULT_PATH_COLOR,
         arrow: ArrowPosition | None = None,
-        color: str = PATH_COLOR,
-        wide: bool = False,
     ):
-        super().__init__(
-            default_params={
-                "arrow": arrow,
-                "fill": color,
-                "width": self.BOLD_WIDTH if wide else self.DEFAULT_WIDTH,
-            }
-        )
+        self.arrow = arrow
         self.points = points
+        self.color = color
 
     def put_on_canvas(
         self,
         canvas: tk.Canvas,
         coords: tuple[int, int],
-        text: str | None = None,
-        params: dict[str, Any] | None = None,
-        text_params: dict[str, Any] | None = None,
+        extra_params: dict[str, Any],
+        caption: list[map.TextParams] | None,
     ):
+        params = {
+            "fill": self.color,
+            "arrow": self.arrow,
+        }
+        params.update(extra_params)
         self._put_on_canvas(
             canvas=canvas,
-            coords=coords,
             objects=[
                 CanvasObjectInfo(
                     creation_function=canvas.create_line,
                     coords=self._get_coords(coords),
-                    params=params or {}
+                    params=params,
+                    caption=map.CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
                 ),
             ],
         )
@@ -247,7 +238,7 @@ class Connection(CanvasObject):
             coords.append(point[1] + _coords[1])
         return coords
     
-@TagsRegistry.connect_to(map.H_PATH)
+@TagsRegistry.connect_to(map.MapTag.H_PATH)
 class HorizontalPath(Connection):
     def __init__(self, arrow: ArrowPosition | None = None):
         center_y = HALF_TILE
@@ -260,7 +251,7 @@ class HorizontalPath(Connection):
         )
     
 
-@TagsRegistry.connect_to(map.V_PATH)
+@TagsRegistry.connect_to(map.MapTag.V_PATH)
 class VerticalPath(Connection):
     def __init__(self, arrow: ArrowPosition | None = None):
         center_x = HALF_TILE
@@ -273,7 +264,7 @@ class VerticalPath(Connection):
         )
     
 
-@TagsRegistry.connect_to(map.DOWN_RIGHT)
+@TagsRegistry.connect_to(map.MapTag.DOWN_RIGHT)
 class DownRightPath(Connection):
     def __init__(self):
         center_x = HALF_TILE
@@ -287,7 +278,7 @@ class DownRightPath(Connection):
         )
     
 
-@TagsRegistry.connect_to(map.DOWN_LEFT)
+@TagsRegistry.connect_to(map.MapTag.DOWN_LEFT)
 class DownLeftPath(Connection):
     def __init__(self):
         center_x = HALF_TILE
@@ -301,7 +292,7 @@ class DownLeftPath(Connection):
         )
     
 
-@TagsRegistry.connect_to(map.UP_RIGHT)
+@TagsRegistry.connect_to(map.MapTag.UP_RIGHT)
 class UpRightPath(Connection):
     def __init__(self):
         center_x = HALF_TILE
@@ -315,7 +306,7 @@ class UpRightPath(Connection):
         )
     
 
-@TagsRegistry.connect_to(map.UP_LEFT)
+@TagsRegistry.connect_to(map.MapTag.UP_LEFT)
 class UpLeftPath(Connection):
     def __init__(self):
         center_x = HALF_TILE
@@ -329,7 +320,7 @@ class UpLeftPath(Connection):
         )
     
 
-@TagsRegistry.connect_to(map.V_LEFT)
+@TagsRegistry.connect_to(map.MapTag.V_LEFT)
 class VerticalLeftPath(Connection):
     def __init__(self):
         center_x = HALF_TILE
@@ -345,7 +336,7 @@ class VerticalLeftPath(Connection):
         )
     
 
-@TagsRegistry.connect_to(map.V_RIGHT)
+@TagsRegistry.connect_to(map.MapTag.V_RIGHT)
 class VerticalRightPath(Connection):
     def __init__(self):
         center_x = HALF_TILE
@@ -361,7 +352,7 @@ class VerticalRightPath(Connection):
         )
     
 
-@TagsRegistry.connect_to(map.H_UP)
+@TagsRegistry.connect_to(map.MapTag.H_UP)
 class HorizontalUpPath(Connection):
     def __init__(self):
         center_x = HALF_TILE
@@ -377,7 +368,7 @@ class HorizontalUpPath(Connection):
         )
     
 
-@TagsRegistry.connect_to(map.H_DOWN)
+@TagsRegistry.connect_to(map.MapTag.H_DOWN)
 class HorizontalDownPath(Connection):
     def __init__(self):
         center_x = HALF_TILE
@@ -393,7 +384,7 @@ class HorizontalDownPath(Connection):
         )
 
 
-@TagsRegistry.connect_to(map.CROSS)
+@TagsRegistry.connect_to(map.MapTag.CROSS)
 class Cross(Connection):
     def __init__(self):
         center_x = HALF_TILE
@@ -411,50 +402,46 @@ class Cross(Connection):
         )
 
 
-@TagsRegistry.connect_to(map.GO_RIGHT, init_params={"arrow": ArrowPosition.END})
+@TagsRegistry.connect_to(map.MapTag.GO_RIGHT, init_params={"arrow": ArrowPosition.END})
 class RightArrow(HorizontalPath):
     pass
     
 
-@TagsRegistry.connect_to(map.GO_LEFT, init_params={"arrow": ArrowPosition.START})
+@TagsRegistry.connect_to(map.MapTag.GO_LEFT, init_params={"arrow": ArrowPosition.START})
 class LeftArrow(HorizontalPath):
     pass
 
 
-@TagsRegistry.connect_to(map.GO_UP, init_params={"arrow": ArrowPosition.START})
+@TagsRegistry.connect_to(map.MapTag.GO_UP, init_params={"arrow": ArrowPosition.START})
 class UpArrow(VerticalPath):
     pass
 
 
-@TagsRegistry.connect_to(map.GO_DOWN, init_params={"arrow": ArrowPosition.END})
+@TagsRegistry.connect_to(map.MapTag.GO_DOWN, init_params={"arrow": ArrowPosition.END})
 class DownArrow(VerticalPath):
     pass
 
 
-@TagsRegistry.connect_to(map.BASE, init_params={"color": DEFAULT_BASE_COLOR})
+@TagsRegistry.connect_to(map.MapTag.BASE, init_params={"color": DEFAULT_BASE_COLOR})
 class CircleBase(CanvasObject):
     def __init__(self, color: str):
-        super().__init__(
-            default_params={
-                "fill": color
-            }
-        )
+        self.color = color
 
     def put_on_canvas(
         self,
         canvas: tk.Canvas,
         coords: tuple[int, int],
-        text: str | None = None,
-        params: dict[str, Any] | None = None,
-        text_params: dict[str, Any] | None = None,
+        extra_params: dict[str, Any],
+        caption: list[map.TextParams] | None,
     ):
         topleft_x = coords[0]
         topleft_y = coords[1]
         bottomright_x = topleft_x + TILE_SIZE
         bottomright_y = topleft_y + TILE_SIZE
+        if "fill" not in extra_params:
+            extra_params["fill"] = self.color
         self._put_on_canvas(
             canvas=canvas,
-            coords=coords,
             objects=[
                 CanvasObjectInfo(
                     creation_function=canvas.create_oval,
@@ -464,36 +451,34 @@ class CircleBase(CanvasObject):
                         bottomright_x,
                         bottomright_y,
                     ],
-                    params=params or {},
+                    params=extra_params,
+                    caption=map.CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
                 ),
             ],
-            text=text,
-            text_params=text_params,
         )
 
 
-@TagsRegistry.connect_to(map.RHOMB, init_params={"color": "#AA9853"})
+@TagsRegistry.connect_to(map.MapTag.RHOMB, init_params={"color": "#AA9853"})
 class RhombBase(CanvasObject):
     SIZE = (1, 1)
 
     def __init__(self, color: str):
-        super().__init__(
-            default_params={
-                "fill": color,
-            }
-        )
+        self.color = color
 
     def put_on_canvas(
         self,
         canvas: tk.Canvas,
         coords: tuple[int, int],
-        text: str | None = None,
-        params: dict[str, Any] | None = None,
-        text_params: dict[str, Any] | None = None,
+        extra_params: dict[str, Any],
+        caption: list[map.TextParams] | None,
     ):
+        if "fill" not in extra_params:
+            extra_params["fill"] = self.color
         self._put_on_canvas(
             canvas=canvas,
-            coords=coords,
             objects=[
                 CanvasObjectInfo(
                     creation_function=canvas.create_polygon,
@@ -507,46 +492,55 @@ class RhombBase(CanvasObject):
                         coords[0] + HALF_TILE * self.SIZE[0],
                         coords[1] + TILE_SIZE * self.SIZE[1],
                     ],
-                    params=params or {}
+                    params=extra_params,
+                    caption=map.CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
                 ),
             ],
-            text=text,
-            text_params=text_params,
-            size=self.SIZE,
         )
 
 
-@TagsRegistry.connect_to(map.BIG_RHOMB, init_params={"color": "#AA9853"})
+@TagsRegistry.connect_to(map.MapTag.BIG_RHOMB, init_params={"color": "#AA9853"})
 class BigRhombBase(RhombBase):
     SIZE = (2, 3)
 
 
-@TagsRegistry.connect_to(map.SQUARE, init_params={"color": DEFAULT_BASE_COLOR})
+@TagsRegistry.connect_to(map.MapTag.SQUARE, init_params={"color": DEFAULT_BASE_COLOR})
 class SquareBase(CanvasObject):
     DEFAULT_WIDTH = 3
 
-    def __init__(self, color: str, prefix: str = "K"):
-        super().__init__(
-            default_params={
-                "fill": color,
-            },
-            default_caption_params={
-                "font": Font(weight="bold"),
-            }
-        )
+    def __init__(self, color: str, prefix: str = "K", bold: bool = True):
         self.prefix = prefix
+        self.color = color
+        self.bold = bold
 
     def put_on_canvas(
         self,
         canvas: tk.Canvas,
         coords: tuple[int, int],
-        text: str | None = None,
-        params: dict[str, Any] | None = None,
-        text_params: dict[str, Any] | None = None,
+        extra_params: dict[str, Any],
+        caption: list[map.TextParams] | None,
     ):
+        if "fill" not in extra_params:
+            extra_params["fill"] = self.color
+        if caption is not None:
+            new_caption = map.CaptionInfo(
+                contents=[
+                    map.TextParams(
+                        text=t.text,
+                        boxed=t.boxed,
+                        arrowed=t.arrowed,
+                    )
+                    for t in caption
+                ],
+                relative_pos="center",
+            )
+        else:
+            new_caption = None
         self._put_on_canvas(
             canvas=canvas,
-            coords=coords,
             objects=[
                 CanvasObjectInfo(
                     creation_function=canvas.create_rectangle,
@@ -556,26 +550,19 @@ class SquareBase(CanvasObject):
                         coords[0] + TILE_SIZE,
                         coords[1] + TILE_SIZE,
                     ],
-                    params=params or {}
+                    params=extra_params,
+                    caption=new_caption
                 ),
             ],
-            text=(self.prefix + text) if text else None,
-            text_params=text_params,
         )
 
 
 class BigSquaredCircleBase(CanvasObject):
     TILE_SIZE = 3 * TILE_SIZE
-    SIZE = (3, 3)
     CIRCLE_OFFSET = 4
     CORNER_SIZE = 2
 
     def __init__(self, square_color: str, circle_color: str):
-        super().__init__(
-            default_caption_params={
-                "font": Font(weight="bold")
-            }
-        )
         self.square_color = square_color
         self.circle_color = circle_color
     
@@ -583,9 +570,8 @@ class BigSquaredCircleBase(CanvasObject):
         self,
         canvas: tk.Canvas,
         coords: tuple[int, int],
-        text: str | None = None,
-        params: dict[str, Any] | None = None,
-        text_params: dict[str, Any] | None = None,
+        extra_params: dict[str, Any],
+        caption: list[map.TextParams] | None,
     ):
         square_params = {
             "fill": self.square_color,
@@ -594,12 +580,14 @@ class BigSquaredCircleBase(CanvasObject):
             "splinesteps": 24,
         }
         circle_params = {"fill": self.circle_color}
-        if params is not None:
-            square_params.update(params)
-            circle_params.update(params)
+        square_params.update(extra_params)
+        circle_params.update(extra_params)
+        if caption is not None:
+            for part in caption:
+                if "font" not in part.extra_params:
+                    part.extra_params["font"] = Font(weight="bold")
         self._put_on_canvas(
             canvas=canvas,
-            coords=coords,
             objects=[
                 CanvasObjectInfo(
                     creation_function=canvas.create_polygon,
@@ -622,6 +610,7 @@ class BigSquaredCircleBase(CanvasObject):
                         coords[1] + self.CORNER_SIZE,
                     ],
                     params=square_params,
+                    caption=None,
                 ),
                 CanvasObjectInfo(
                     creation_function=canvas.create_oval,
@@ -632,25 +621,26 @@ class BigSquaredCircleBase(CanvasObject):
                         coords[1] + self.TILE_SIZE - self.CIRCLE_OFFSET,
                     ],
                     params=circle_params,
+                    caption=map.CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
                 ),
             ],
-            text=text,
-            text_params=text_params,
-            size=self.SIZE,
         )
 
 
-@TagsRegistry.connect_to(map.START, init_params={"square_color": "#BEBE4C", "circle_color": "#FFFF66"})
+@TagsRegistry.connect_to(map.MapTag.START, init_params={"square_color": "#BEBE4C", "circle_color": "#FFFF66"})
 class StartBase(BigSquaredCircleBase):
     pass
 
 
-@TagsRegistry.connect_to(map.FINISH, init_params={"square_color": "#B62323", "circle_color": "#FF3333"})
+@TagsRegistry.connect_to(map.MapTag.FINISH, init_params={"square_color": "#B62323", "circle_color": "#FF3333"})
 class FinishBase(BigSquaredCircleBase):
     pass
 
 
-@TagsRegistry.connect_to(map.STAR)
+@TagsRegistry.connect_to(map.MapTag.STAR)
 class StarBase(CanvasObject):
     def __init__(
         self,
@@ -659,17 +649,7 @@ class StarBase(CanvasObject):
         color: str = "#FFF134",
         size: int = 3,
     ):
-        super().__init__(
-            default_params={
-                "fill": color,
-                "outline": "black",
-                "smooth": True,
-                "splinesteps": 24,
-            },
-            default_caption_params={
-                "font": Font(weight="bold")
-            }
-        )
+        self.color = color
         self.size = size
         self.star_size = size * TILE_SIZE
         self._half_star_size = self.star_size / 2
@@ -722,23 +702,33 @@ class StarBase(CanvasObject):
         self,
         canvas: tk.Canvas,
         coords: tuple[int, int],
-        text: str | None = None,
-        params: dict[str, Any] | None = None,
-        text_params: dict[str, Any] | None = None,
+        extra_params: dict[str, Any],
+        caption: list[map.TextParams] | None,
     ):
+        params = {
+            "fill": self.color,
+            "outline": "black",
+            "smooth": True,
+            "splinesteps": 24,
+        }
+        params.update(extra_params)
+        if caption is not None:
+            for part in caption:
+                if "font" not in part.extra_params:
+                    part.extra_params["font"] = Font(weight="bold")
         self._put_on_canvas(
             canvas=canvas,
-            coords=coords,
             objects=[
                 CanvasObjectInfo(
                     creation_function=canvas.create_polygon,
                     coords=self._get_coords(coords),
-                    params=params or {},
+                    params=params,
+                    caption=map.CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
                 ),
             ],
-            text=text,
-            text_params=text_params,
-            size=self.shape,
         )
 
 
@@ -749,12 +739,6 @@ class Image(CanvasObject):
         self.mirror_y=mirror_y
         self.rotate=rotate
         self._set_image()
-        super().__init__(
-            default_params={
-                "image": self.image,
-                "anchor": "nw",
-            }
-        )
 
     def _set_image(self):
         image = tk.PhotoImage(file=self.image_path)
@@ -776,22 +760,27 @@ class Image(CanvasObject):
         self,
         canvas: tk.Canvas,
         coords: tuple[int, int],
-        text: str | None = None,
-        params: dict[str, Any] | None = None,
-        text_params: dict[str, Any] | None = None,
+        extra_params: dict[str, Any],
+        caption: list[map.TextParams] | None,
     ):
+        params = {
+            "image": self.image,
+            "anchor": "nw",
+        }
+        params.update(extra_params)
         self._put_on_canvas(
             canvas=canvas,
-            coords=coords,
             objects=[
                 CanvasObjectInfo(
                     creation_function=canvas.create_image,
                     coords=coords,  # type: ignore
-                    params=params or {},
+                    params=extra_params,
+                    caption=map.CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
                 )
             ],
-            text=text,
-            text_params=text_params,
         )
 
 class ResizableWidget:
