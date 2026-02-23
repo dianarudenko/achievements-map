@@ -123,10 +123,18 @@ class CanvasObject:
                             cur_bbox[1],
                             cur_bbox[2],
                             cur_bbox[1],
-                            arrow="first" if part.arrowed == "left" else "last",
+                            arrow="first" if part.arrowed == "l" else "last",
+                            arrowshape=(3, 3 * math.sqrt(2), 3),
                             tags=CanvasTag.TEXT,
                         )
-                    start_x = cur_bbox[0] if direction < 0 else cur_bbox[2]
+                    if direction < 0:
+                        start_x = cur_bbox[0]
+                        if tk.E not in anchor:
+                            anchor += tk.E
+                    else:
+                        start_x = cur_bbox[2]
+                        if tk.W not in anchor:
+                            anchor += tk.W
 
     @abstractmethod
     def put_on_canvas(
@@ -220,12 +228,14 @@ class Connection(CanvasObject):
     def __init__(
         self,
         points: list[tuple[float, float]],
+        caption_pos: Literal["left", "right", "up", "down", "center"] = "center",
         color: str = DEFAULT_PATH_COLOR,
         arrow: ArrowPosition | None = None,
     ):
         self.arrow = arrow
         self.points = points
         self.color = color
+        self.caption_pos: Literal["left", "right", "up", "down", "center"] = caption_pos
 
     def put_on_canvas(
         self,
@@ -248,7 +258,7 @@ class Connection(CanvasObject):
                     params=params,
                     caption=map.CaptionInfo(
                         contents=caption,
-                        relative_pos="center",
+                        relative_pos=self.caption_pos,
                     ) if caption is not None else None,
                 ),
             ],
@@ -268,9 +278,10 @@ class HorizontalPath(Connection):
         super().__init__(
             points=([
                 (0, center_y),
-                (0 + TILE_SIZE, center_y),
+                (TILE_SIZE, center_y),
             ]),
             arrow=arrow,
+            caption_pos="up",
         )
     
 
@@ -284,6 +295,103 @@ class VerticalPath(Connection):
                 (center_x, TILE_SIZE),
             ]),
             arrow=arrow,
+            caption_pos="right",
+        )
+
+
+class CrossedConnection(Connection):
+    def __init__(
+        self,
+        points: list[tuple[float, float]],
+        cross_points: list[tuple[float, float]],
+        color: str = DEFAULT_PATH_COLOR,
+        cross_color: str = "red",
+        cross_width: float = 6,
+        dash_style: tuple[int, ...] = (8, 4)
+    ):
+        super().__init__(points=points, color=color)
+        self.cross_points = cross_points
+        self.cross_color = cross_color
+        self.cross_width = cross_width
+        self.dash_style = dash_style
+
+    def put_on_canvas(
+        self,
+        canvas: tk.Canvas,
+        coords: tuple[int, int],
+        extra_params: dict[str, Any],
+        caption: list[map.TextParams] | None,
+    ):
+        if "fill" not in extra_params:
+            extra_params["fill"] = self.color
+        cross_params = {
+            "fill": self.cross_color,
+            "width": self.cross_width,
+            "dash": self.dash_style,
+        }
+        self._put_on_canvas(
+            canvas=canvas,
+            objects=[
+                CanvasObjectInfo(
+                    creation_function=canvas.create_line,
+                    coords=self._get_coords(coords),
+                    params=extra_params,
+                    caption=None,
+                ),
+                CanvasObjectInfo(
+                    creation_function=canvas.create_line,
+                    coords=self._get_cross_coords(coords),
+                    params=cross_params,
+                    caption=None,
+                ),
+            ],
+        )
+
+    def _get_cross_coords(self, _coords: tuple[float, float]):
+        coords: list[float] = []
+        for point in self.cross_points:
+            coords.append(point[0] + _coords[0])
+            coords.append(point[1] + _coords[1])
+        return coords
+
+
+@TagsRegistry.connect_to(map.MapTag.CROSSED_H_PATH)
+class CrossedHorizontalPath(CrossedConnection):
+    def __init__(self, cross_color: str = "red", cross_width: float = 6, dash_style: tuple[int, ...] = (8, 4)):
+        center_y = HALF_TILE
+        center_x = HALF_TILE
+        super().__init__(
+            points=([
+                (0, center_y),
+                (TILE_SIZE, center_y),
+            ]),
+            cross_points=([
+                (center_x, 0),
+                (center_x, TILE_SIZE),
+            ]),
+            cross_color=cross_color,
+            cross_width=cross_width,
+            dash_style=dash_style,
+        )
+
+
+@TagsRegistry.connect_to(map.MapTag.CROSSED_V_PATH)
+class CrossedVerticalPath(CrossedConnection):
+    def __init__(self, cross_color: str = "red", cross_width: float = 6, dash_style: tuple[int, ...] = (8, 4)):
+        center_y = HALF_TILE
+        center_x = HALF_TILE
+        super().__init__(
+            points=([
+                (center_x, 0),
+                (center_x, TILE_SIZE),
+            ]),
+            cross_points=([
+                (0, center_y),
+                (TILE_SIZE, center_y),
+            ]),
+            cross_color=cross_color,
+            cross_width=cross_width,
+            dash_style=dash_style,
         )
     
 
@@ -297,7 +405,8 @@ class DownRightPath(Connection):
                 (TILE_SIZE, center_y),
                 (center_x, center_y),
                 (center_x, TILE_SIZE),
-            ])
+            ]),
+            caption_pos="up",
         )
     
 
@@ -311,7 +420,8 @@ class DownLeftPath(Connection):
                 (0, center_y),
                 (center_x, center_y),
                 (center_x, TILE_SIZE),
-            ])
+            ]),
+            caption_pos="right",
         )
     
 
@@ -325,7 +435,8 @@ class UpRightPath(Connection):
                 (center_x, 0),
                 (center_x, center_y),
                 (TILE_SIZE, center_y),
-            ])
+            ]),
+            caption_pos="down",
         )
     
 
@@ -339,7 +450,8 @@ class UpLeftPath(Connection):
                 (0, center_y),
                 (center_x, center_y),
                 (center_x, 0),
-            ])
+            ]),
+            caption_pos="right",
         )
     
 
@@ -355,7 +467,8 @@ class VerticalLeftPath(Connection):
                 (0, center_y),
                 (center_x, center_y),
                 (center_x, TILE_SIZE),
-            ])
+            ]),
+            caption_pos="right",
         )
     
 
@@ -371,7 +484,8 @@ class VerticalRightPath(Connection):
                 (TILE_SIZE, center_y),
                 (center_x, center_y),
                 (center_x, TILE_SIZE),
-            ])
+            ]),
+            caption_pos="left",
         )
     
 
@@ -387,7 +501,8 @@ class HorizontalUpPath(Connection):
                 (center_x, 0),
                 (center_x, center_y),
                 (TILE_SIZE, center_y),
-            ])
+            ]),
+            caption_pos="down",
         )
     
 
@@ -403,7 +518,8 @@ class HorizontalDownPath(Connection):
                 (center_x, TILE_SIZE),
                 (center_x, center_y),
                 (TILE_SIZE, center_y),
-            ])
+            ]),
+            caption_pos="up",
         )
 
 
