@@ -947,7 +947,6 @@ class ScrollableCanvas(ResizableWidget):
             command=self.widget.xview,
         )
         self.x_scroll.grid(row=1, column=0, sticky=tk.W+tk.E)
-        self.x_scroll.focus()
         self.widget['xscrollcommand'] = self.x_scroll.set
         self.y_scroll: tk.Scrollbar = tk.Scrollbar(
             parent,
@@ -955,8 +954,37 @@ class ScrollableCanvas(ResizableWidget):
             command=self.widget.yview,
         )
         self.y_scroll.grid(row=0, column=1, sticky=tk.S+tk.N)
-        self.y_scroll.focus()
         self.widget['yscrollcommand'] = self.y_scroll.set
+
+        self.widget.bind_all("<Button-4>", self.linux_scroll_hadler)
+        self.widget.bind_all("<Button-5>", self.linux_scroll_hadler)
+        self.widget.bind_all("<MouseWheel>", self.windows_scroll_hadler)
+        self.widget.bind_all("<Shift-Button-4>", self.linux_horizontal_scroll_hadler)
+        self.widget.bind_all("<Shift-Button-5>", self.linux_horizontal_scroll_hadler)
+        self.widget.bind_all("<Shift-MouseWheel>", self.windows_horizontal_scroll_hadler)
+
+    def windows_scroll_hadler(self, event: tk.Event):
+        one_step_size = 120
+        delta = event.delta // one_step_size
+        self.widget.yview_scroll(-delta, "units")
+
+    def linux_scroll_hadler(self, event: tk.Event):
+        if event.num == 4:
+            self.widget.yview_scroll(-1, "units")
+        else:
+            self.widget.yview_scroll(1, "units")
+
+    def windows_horizontal_scroll_hadler(self, event: tk.Event):
+        one_step_size = 120
+        delta = event.delta // one_step_size
+        self.widget.xview_scroll(-delta, "units")
+
+    def linux_horizontal_scroll_hadler(self, event: tk.Event):
+        if event.num == 4:
+            self.widget.xview_scroll(-1, "units")
+        else:
+            self.widget.xview_scroll(1, "units")
+        
 
 def sort_canvas_objects(canvas: tk.Canvas):
     canvas.tag_raise(CanvasTag.PATH)
