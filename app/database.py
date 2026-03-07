@@ -67,6 +67,7 @@ def create_map_item_table(db: DataBase):
             color TEXT NULL,
             extra_params TEXT NULL,
             caption TEXT NULL,
+            description TEXT NULL,
             PRIMARY KEY (row, column)
         )
         """
@@ -146,8 +147,8 @@ def db_connect() -> DataBase:
 
 def init_db(db: DataBase) -> int:
     create_map_table(db)
-    # create_map_item_table(db)
-    recreate_map_item_table(db)
+    create_map_item_table(db)
+    # recreate_map_item_table(db)
     map_id: int
     db.cursor.execute(f"SELECT id, initialized from {MAP_TABLE_NAME} WHERE name = '{INITIAL_MAP_NAME}'")
     result = db.cursor.fetchone()
@@ -171,3 +172,25 @@ def init_db(db: DataBase) -> int:
 def db_disconnect(db: DataBase):
     db.cursor.close()
     db.connection.close()
+
+def move_character(db: DataBase, map_id: int, row: int, column: int):
+    db.cursor.execute(
+        f"""
+            UPDATE {MAP_ITEM_TABLE_NAME}
+            SET state = '{MapState.VISITED.value}'
+            WHERE state = '{MapState.CURRENT.value}' AND map = {map_id}
+        """
+    )
+    db.cursor.execute(
+        f"""
+            SELECT * FROM {MAP_ITEM_TABLE_NAME} LIMIT 100
+        """
+    )
+    db.cursor.execute(
+        f"""
+            UPDATE {MAP_ITEM_TABLE_NAME}
+            SET state = '{MapState.CURRENT.value}'
+            WHERE row = {row} AND column = {column} AND map = {map_id}
+        """
+    )
+    db.connection.commit()

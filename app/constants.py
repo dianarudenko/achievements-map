@@ -16,4 +16,3 @@ HALF_TILE = TILE_SIZE / 2
 INITIAL_MAP_NAME = "Initial map"
 
 CHARACTER_SPRITE_PATH = os.path.join(SPRITES_PATH, "character.png")
-print(CHARACTER_SPRITE_PATH)

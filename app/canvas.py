@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import math
 import os
@@ -15,7 +15,7 @@ from app.constants import (
     TILE_SIZE,
     CHARACTER_SPRITE_PATH
 )
-from app.database import DataBase, get_map
+from app import database
 from app.widget import ScrollableCanvas
 
 from .map import CaptionInfo, MapObjectInfo, MapState, MapTag, TextParams
@@ -47,21 +47,30 @@ class CanvasObjectInfo:
 
 @dataclass
 class CanvasMeta:
+    canvas: tk.Canvas
     width: float
     height: float
     background_hitbox_id: int
     background_hitbox_width: float
     background_hitbox_height: float
+    map_id: int
+    db: database.DataBase
+    clickable_bases: dict[int, tuple[float, float, float, float]] = field(default_factory=dict)
+    chosen_base: int | None = None
+    character_id: int | None = None
 
 current_canvas: CanvasMeta
 
 
 def get_base_actions_frame(canvas: tk.Canvas) -> tk.Frame:
-    frame = tk.Frame(canvas, width=100, height=50)
+    frame = tk.Frame(canvas)
+    description_area = tk.Text(frame, width=25, height=10)
+    description_area.grid(row=0, column=0, columnspan=2)
+    description_button = tk.Button(frame, text="Редактировать")
+    description_button.grid(row=1, column=0)
     go_button = tk.Button(frame, text="Перейти")
-    go_button.grid(row=0, column=0)
-    description_button = tk.Button(frame, text="Описание")
-    description_button.grid(row=0, column=1)
+    go_button.grid(row=1, column=1)
+    go_button.bind("<Button-1>", CanvasObject.move_character)
     return frame
 
 
@@ -69,6 +78,7 @@ class CanvasObject:
     DEFAULT_WIDTH = 2
     BOLD_WIDTH = 3
     canvas_tag = CanvasTag.BASE
+    character_obj: tk.PhotoImage | None = None
 
     def _put_on_canvas(
         self,
@@ -93,8 +103,6 @@ class CanvasObject:
                 tags=tags,
             )
             created_objects.append(item_id)
-            # if tags == CanvasTag.BASE:
-            #     CanvasMeta.bases.add(item_id)
             if item.caption is not None:
                 top_left_x, top_left_y, bottom_right_x, bottom_right_y = canvas.bbox(item_id)
                 direction: Literal[1, -1] = 1
@@ -162,41 +170,30 @@ class CanvasObject:
                             anchor += tk.W
         if add_hitbox:
             hitbox = canvas.bbox(*created_objects)
-            canvas.create_rectangle(
+            hitbox_id = canvas.create_rectangle(
                 hitbox,
                 outline="",
                 tags=CanvasTag.BASE_HITBOX,
             )
+            current_canvas.clickable_bases[hitbox_id] = hitbox
     
-    def _get_objects(
-        self,
+    @classmethod
+    def put_character(
+        cls,
         canvas: tk.Canvas,
-        coords: tuple[int, int],
-        params: dict[str, Any],
-        caption: list[TextParams] | None,
-        state: MapState,
-        tile_width: float = TILE_SIZE,
-        tile_height: float = TILE_SIZE,
-    ) -> list[CanvasObjectInfo]:
-        if state == MapState.CURRENT:
-            self.character_obj = tk.PhotoImage(file=CHARACTER_SPRITE_PATH)
-            center_x = coords[0] + tile_width / 2
-            center_y = coords[1] + tile_height / 2
-            return [
-                CanvasObjectInfo(
-                    creation_function=canvas.create_image,
-                    coords=[center_x, center_y],
-                    params={
-                        "image": self.character_obj,
-                        "anchor": tk.CENTER,
-                        "tags": CanvasTag.CHARACTER,
-                    },
-                    caption=CaptionInfo(
-                        contents=[TextParams(text="WTF")]
-                    ),
-                )
-            ]
-        return []
+        coords: tuple[float, float, float, float],
+    ):
+        if cls.character_obj is None:
+            cls.character_obj = tk.PhotoImage(file=CHARACTER_SPRITE_PATH)
+        center_x = (coords[0] + coords[2]) / 2
+        center_y = (coords[1] + coords[3]) / 2
+        current_canvas.character_id = canvas.create_image(
+            center_x,
+            center_y,
+            image=cls.character_obj,
+            anchor=tk.CENTER,
+            tags=CanvasTag.CHARACTER,
+        )
 
     @abstractmethod
     def put_on_canvas(
@@ -213,9 +210,13 @@ class CanvasObject:
     def handle_base_click(cls, event: tk.Event):
         canvas: tk.Canvas = event.widget  # type: ignore
         canvas.delete(CanvasTag.POPUP)
+        canvas_x = canvas.canvasx(event.x)
+        canvas_y = canvas.canvasy(event.y)
+        base_hitbox_id: int = canvas.find_closest(canvas_x, canvas_y)[0]
+        current_canvas.chosen_base = base_hitbox_id
         canvas.create_window(
-            canvas.canvasx(event.x),
-            canvas.canvasy(event.y),
+            canvas_x,
+            canvas_y,
             anchor=tk.N,
             window=get_base_actions_frame(canvas),
             tags=CanvasTag.POPUP,
@@ -225,6 +226,7 @@ class CanvasObject:
     def handle_outside_click(cls, event: tk.Event):
         canvas: tk.Canvas = event.widget  # type: ignore
         canvas.delete(CanvasTag.POPUP)
+        current_canvas.chosen_base = None
 
     @classmethod
     def handle_resizing(cls, event: tk.Event):
@@ -236,6 +238,26 @@ class CanvasObject:
         current_canvas.background_hitbox_width = new_width
         current_canvas.background_hitbox_height = new_height
         canvas.scale(current_canvas.background_hitbox_id, 0, 0, x_scale, y_scale)
+
+    @classmethod
+    def move_character(
+        cls,
+        event: tk.Event,
+    ):
+        canvas: tk.Canvas = current_canvas.canvas
+        if current_canvas.chosen_base is not None:
+            canvas.delete(CanvasTag.CHARACTER)
+            base_coords = current_canvas.clickable_bases[current_canvas.chosen_base]
+            cls.put_character(canvas, base_coords)
+            column = int((base_coords[0] + HALF_TILE) // TILE_SIZE)
+            row = int((base_coords[1] + HALF_TILE) // TILE_SIZE)
+            database.move_character(
+                db=current_canvas.db,
+                map_id=current_canvas.map_id,
+                row=row,
+                column=column,
+            )
+            canvas.delete(CanvasTag.POPUP)
 
 
 class TagsRegistry:
@@ -667,58 +689,45 @@ class DownArrow(VerticalPath):
 class CircleBase(CanvasObject):
     def __init__(self, color: str):
         self.color = color
-    
-    def _get_objects(
-        self,
-        canvas: tk.Canvas,
-        coords: tuple[int, int],
-        params: dict[str, Any],
-        caption: list[TextParams] | None,
-        state: MapState,
-    ) -> list[CanvasObjectInfo]:
-        objects = super()._get_objects(canvas, coords, params, caption, state)
-        topleft_x = coords[0]
-        topleft_y = coords[1]
-        bottomright_x = topleft_x + TILE_SIZE
-        bottomright_y = topleft_y + TILE_SIZE
-        objects.append(
-            CanvasObjectInfo(
-                creation_function=canvas.create_oval,
-                coords=[
-                    topleft_x,
-                    topleft_y,
-                    bottomright_x,
-                    bottomright_y,
-                ],
-                params=params,
-                caption=CaptionInfo(
-                    contents=caption,
-                    relative_pos="center",
-                ) if caption is not None else None,
-            ),
-        )
-        return objects
 
     def put_on_canvas(
         self,
         canvas: tk.Canvas,
-        coords: tuple[int, int],
+        coords: tuple[float, float],
         extra_params: dict[str, Any],
         caption: list[TextParams] | None,
         state: MapState,
     ):
+        topleft_x = coords[0]
+        topleft_y = coords[1]
+        bottomright_x = topleft_x + TILE_SIZE
+        bottomright_y = topleft_y + TILE_SIZE
         if "fill" not in extra_params:
             extra_params["fill"] = self.color
         self._put_on_canvas(
             canvas=canvas,
-            objects=self._get_objects(
-                canvas=canvas,
-                coords=coords,
-                params=extra_params,
-                caption=caption,
-                state=state,
-            ),
+            objects=[
+                CanvasObjectInfo(
+                    creation_function=canvas.create_oval,
+                    coords=[
+                        topleft_x,
+                        topleft_y,
+                        bottomright_x,
+                        bottomright_y,
+                    ],
+                    params=extra_params,
+                    caption=CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
+                ),
+            ],
         )
+        if state == MapState.CURRENT:
+            self.put_character(
+                canvas=canvas,
+                coords=(topleft_x, topleft_y, bottomright_x, bottomright_y),
+            )
 
 
 @TagsRegistry.connect_to(MapTag.RHOMB, init_params={"color": "#AA9853"})
@@ -727,44 +736,11 @@ class RhombBase(CanvasObject):
 
     def __init__(self, color: str):
         self.color = color
-    
-    def _get_objects(
-        self,
-        canvas: tk.Canvas,
-        coords: tuple[int, int],
-        params: dict[str, Any],
-        caption: list[TextParams] | None,
-        state: MapState,
-    ) -> list[CanvasObjectInfo]:
-        width = self.SIZE[0] * TILE_SIZE
-        height = self.SIZE[1] * TILE_SIZE
-        objects = super()._get_objects(canvas, coords, params, caption, state, width, height)
-        objects.append(
-            CanvasObjectInfo(
-                creation_function=canvas.create_polygon,
-                coords=[
-                    coords[0],
-                    coords[1] + HALF_TILE * self.SIZE[1],
-                    coords[0] + HALF_TILE * self.SIZE[0],
-                    coords[1],
-                    coords[0] + TILE_SIZE * self.SIZE[0],
-                    coords[1] + HALF_TILE * self.SIZE[1],
-                    coords[0] + HALF_TILE * self.SIZE[0],
-                    coords[1] + TILE_SIZE * self.SIZE[1],
-                ],
-                params=params,
-                caption=CaptionInfo(
-                    contents=caption,
-                    relative_pos="center",
-                ) if caption is not None else None,
-            ),
-        )
-        return objects
 
     def put_on_canvas(
         self,
         canvas: tk.Canvas,
-        coords: tuple[int, int],
+        coords: tuple[float, float],
         extra_params: dict[str, Any],
         caption: list[TextParams] | None,
         state: MapState,
@@ -773,14 +749,37 @@ class RhombBase(CanvasObject):
             extra_params["fill"] = self.color
         self._put_on_canvas(
             canvas=canvas,
-            objects=self._get_objects(
-                canvas=canvas,
-                coords=coords,
-                params=extra_params,
-                caption=caption,
-                state=state,
-            ),
+            objects=[
+                CanvasObjectInfo(
+                    creation_function=canvas.create_polygon,
+                    coords=[
+                        coords[0],
+                        coords[1] + HALF_TILE * self.SIZE[1],
+                        coords[0] + HALF_TILE * self.SIZE[0],
+                        coords[1],
+                        coords[0] + TILE_SIZE * self.SIZE[0],
+                        coords[1] + HALF_TILE * self.SIZE[1],
+                        coords[0] + HALF_TILE * self.SIZE[0],
+                        coords[1] + TILE_SIZE * self.SIZE[1],
+                    ],
+                    params=extra_params,
+                    caption=CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
+                ),
+            ],
         )
+        if state == MapState.CURRENT:
+            self.put_character(
+                canvas=canvas,
+                coords=(
+                    coords[0],
+                    coords[1],
+                    coords[0] + self.SIZE[0] * TILE_SIZE,
+                    coords[1] + self.SIZE[1] * TILE_SIZE,
+                ),
+            )
 
 
 @TagsRegistry.connect_to(MapTag.BIG_RHOMB, init_params={"color": "#AA9853"})
@@ -793,33 +792,6 @@ class SquareBase(CanvasObject):
     def __init__(self, color: str, prefix: str = "K"):
         self.prefix = prefix
         self.color = color
-    
-    def _get_objects(
-        self,
-        canvas: tk.Canvas,
-        coords: tuple[int, int],
-        params: dict[str, Any],
-        caption: list[TextParams] | None,
-        state: MapState,
-    ) -> list[CanvasObjectInfo]:
-        objects = super()._get_objects(canvas, coords, params, caption, state)
-        objects.append(
-            CanvasObjectInfo(
-                creation_function=canvas.create_rectangle,
-                coords=[
-                    coords[0],
-                    coords[1],
-                    coords[0] + TILE_SIZE,
-                    coords[1] + TILE_SIZE,
-                ],
-                params=params,
-                caption=CaptionInfo(
-                    contents=caption,
-                    relative_pos="center",
-                ) if caption is not None else None,
-            ),
-        )
-        return objects
 
     def put_on_canvas(
         self,
@@ -836,14 +808,33 @@ class SquareBase(CanvasObject):
                 caption[0].text = self.prefix + caption[0].text
         self._put_on_canvas(
             canvas=canvas,
-            objects=self._get_objects(
-                canvas=canvas,
-                coords=coords,
-                params=extra_params,
-                caption=caption,
-                state=state,
-            ),
+            objects=[
+                CanvasObjectInfo(
+                    creation_function=canvas.create_rectangle,
+                    coords=[
+                        coords[0],
+                        coords[1],
+                        coords[0] + TILE_SIZE,
+                        coords[1] + TILE_SIZE,
+                    ],
+                    params=extra_params,
+                    caption=CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
+                ),
+            ],
         )
+        if state == MapState.CURRENT:
+            self.put_character(
+                canvas=canvas,
+                coords=(
+                    coords[0],
+                    coords[1],
+                    coords[0] + TILE_SIZE,
+                    coords[1] + TILE_SIZE,
+                ),
+            )
 
 
 class BigSquaredCircleBase(CanvasObject):
@@ -855,15 +846,14 @@ class BigSquaredCircleBase(CanvasObject):
         self.square_color = square_color
         self.circle_color = circle_color
     
-    def _get_objects(
+    def put_on_canvas(
         self,
         canvas: tk.Canvas,
         coords: tuple[int, int],
-        params: dict[str, Any],
+        extra_params: dict[str, Any],
         caption: list[TextParams] | None,
         state: MapState,
-    ) -> list[CanvasObjectInfo]:
-        objects = super()._get_objects(canvas, coords, params, caption, state, self.TILE_SIZE, self.TILE_SIZE)
+    ):
         square_params = {
             "fill": self.square_color,
             "outline": "black",
@@ -871,14 +861,15 @@ class BigSquaredCircleBase(CanvasObject):
             "splinesteps": 24,
         }
         circle_params = {"fill": self.circle_color}
-        square_params.update(params)
-        circle_params.update(params)
+        square_params.update(extra_params)
+        circle_params.update(extra_params)
         if caption is not None:
             for part in caption:
                 if "font" not in part.extra_params:
                     part.extra_params["font"] = Font(weight="bold")
-        objects.extend(
-            [
+        self._put_on_canvas(
+            canvas=canvas,
+            objects=[
                 CanvasObjectInfo(
                     creation_function=canvas.create_polygon,
                     coords=[
@@ -918,26 +909,16 @@ class BigSquaredCircleBase(CanvasObject):
                 ),
             ],
         )
-        return objects
-    
-    def put_on_canvas(
-        self,
-        canvas: tk.Canvas,
-        coords: tuple[int, int],
-        extra_params: dict[str, Any],
-        caption: list[TextParams] | None,
-        state: MapState,
-    ):
-        self._put_on_canvas(
-            canvas=canvas,
-            objects=self._get_objects(
+        if state == MapState.CURRENT:
+            self.put_character(
                 canvas=canvas,
-                coords=coords,
-                params=extra_params,
-                caption=caption,
-                state=state,
-            ),
-        )
+                coords=(
+                    coords[0],
+                    coords[1],
+                    coords[0] + self.TILE_SIZE,
+                    coords[1] + self.TILE_SIZE,
+                ),
+            )
 
 
 @TagsRegistry.connect_to(MapTag.START, init_params={"square_color": "#BEBE4C", "circle_color": "#FFFF66"})
@@ -1008,28 +989,6 @@ class StarBase(CanvasObject):
             start_x, start_y = get_vertex((i + 1) % self.p)
         return result
     
-    def _get_objects(
-        self,
-        canvas: tk.Canvas,
-        coords: tuple[int, int],
-        params: dict[str, Any],
-        caption: list[TextParams] | None,
-        state: MapState,
-    ) -> list[CanvasObjectInfo]:
-        objects = super()._get_objects(canvas, coords, params, caption, state, self.star_size, self.star_size)
-        objects.append(
-            CanvasObjectInfo(
-                creation_function=canvas.create_polygon,
-                coords=self._get_coords(coords),
-                params=params,
-                caption=CaptionInfo(
-                    contents=caption,
-                    relative_pos="center",
-                ) if caption is not None else None,
-            ),
-        )
-        return objects
-    
     def put_on_canvas(
         self,
         canvas: tk.Canvas,
@@ -1051,21 +1010,33 @@ class StarBase(CanvasObject):
                     part.extra_params["font"] = Font(weight="bold")
         self._put_on_canvas(
             canvas=canvas,
-            objects=self._get_objects(
-                canvas=canvas,
-                coords=coords,
-                params=params,
-                caption=caption,
-                state=state,
-            ),
+            objects=[
+                CanvasObjectInfo(
+                    creation_function=canvas.create_polygon,
+                    coords=self._get_coords(coords),
+                    params=params,
+                    caption=CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
+                ),
+            ],
         )
+        if state == MapState.CURRENT:
+            self.put_character(
+                canvas=canvas,
+                coords=(
+                    coords[0],
+                    coords[1],
+                    coords[0] + self.star_size,
+                    coords[1] + self.star_size,
+                ),
+            )
 
 
 class Image(CanvasObject):
     def __init__(self, path: str, mirror_x=False, mirror_y=False, rotate=False):
         self.image_path = os.path.join(SPRITES_PATH, path)
-        print(self.image_path)
-        print("lol")
         self.mirror_x=mirror_x
         self.mirror_y=mirror_y
         self.rotate=rotate
@@ -1086,28 +1057,6 @@ class Image(CanvasObject):
                 data = data + "#%02x%02x%02x " % image.get(col if self.rotate else row, row if self.rotate else col)
             data = data + "} "
         self.image.put(data, to=(0, 0, width, height))
-    
-    def _get_objects(
-        self,
-        canvas: tk.Canvas,
-        coords: tuple[int, int],
-        params: dict[str, Any],
-        caption: list[TextParams] | None,
-        state: MapState,
-    ) -> list[CanvasObjectInfo]:
-        objects = super()._get_objects(canvas, coords, params, caption, state)
-        objects.append(
-            CanvasObjectInfo(
-                creation_function=canvas.create_image,
-                coords=coords,  # type: ignore
-                params=params,
-                caption=CaptionInfo(
-                    contents=caption,
-                    relative_pos="center",
-                ) if caption is not None else None,
-            )
-        )
-        return objects
 
     def put_on_canvas(
         self,
@@ -1124,17 +1073,31 @@ class Image(CanvasObject):
         # params.update(extra_params)
         self._put_on_canvas(
             canvas=canvas,
-            objects=self._get_objects(
-                canvas=canvas,
-                coords=coords,
-                params=params,
-                caption=caption,
-                state=state,
-            ),
+            objects=[
+                CanvasObjectInfo(
+                    creation_function=canvas.create_image,
+                    coords=coords,  # type: ignore
+                    params=params,
+                    caption=CaptionInfo(
+                        contents=caption,
+                        relative_pos="center",
+                    ) if caption is not None else None,
+                )
+            ],
         )
+        if state == MapState.CURRENT:
+            self.put_character(
+                canvas=canvas,
+                coords=(
+                    coords[0],
+                    coords[1],
+                    coords[0] + TILE_SIZE,
+                    coords[1] + TILE_SIZE,
+                ),
+            )
 
 
-def setup_canvas(canvas: ScrollableCanvas):
+def setup_canvas(db: database.DataBase, map_id: int, canvas: ScrollableCanvas):
     # add canvas background hitbox
     global current_canvas
     canvas_width = canvas.scrollregion[2]
@@ -1145,11 +1108,14 @@ def setup_canvas(canvas: ScrollableCanvas):
         tags=CanvasTag.BACKGROUND,
     )
     current_canvas = CanvasMeta(
+        canvas=canvas.widget,
         width=canvas_width,
         height=canvas_height,
         background_hitbox_id=canvas_background_id,
         background_hitbox_width=canvas_width,
         background_hitbox_height=canvas_height,
+        db=db,
+        map_id=map_id,
     )
 
 
@@ -1172,8 +1138,8 @@ def configure_canvas(canvas: tk.Canvas):
     canvas.bind("<Configure>", CanvasObject.handle_resizing, add="+")
 
 
-def draw_map(db: DataBase, map_id: int, canvas: ScrollableCanvas):
-    setup_canvas(canvas)
-    for row, column, cell in get_map(db, map_id):
+def draw_map(db: database.DataBase, map_id: int, canvas: ScrollableCanvas):
+    setup_canvas(db, map_id, canvas)
+    for row, column, cell in database.get_map(db, map_id):
         TagsRegistry.parse_cell_and_put_on_canvas(canvas.widget, row, column, cell)
     configure_canvas(canvas.widget)
