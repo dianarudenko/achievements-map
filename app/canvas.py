@@ -15,6 +15,8 @@ from app.constants import (
     TILE_SIZE,
     CHARACTER_SPRITE_PATH
 )
+from app.database import DataBase, get_map
+from app.widget import ScrollableCanvas
 
 from .map import CaptionInfo, MapObjectInfo, MapState, MapTag, TextParams
 
@@ -25,11 +27,14 @@ class ArrowPosition(str, Enum):
     BOTH = "both"
 
 class CanvasTag(str, Enum):
+    BACKGROUND = "background"
     TEXT_BACKGROUND = "text_background"
     TEXT = "text"
     BASE = "base"
     PATH = "path"
     CHARACTER = "character"
+    BASE_HITBOX = "base_hitbox"
+    POPUP = "popup"
 
 
 @dataclass
@@ -40,12 +45,38 @@ class CanvasObjectInfo:
     caption: CaptionInfo | None
 
 
+@dataclass
+class CanvasMeta:
+    width: float
+    height: float
+    background_hitbox_id: int
+    background_hitbox_width: float
+    background_hitbox_height: float
+
+current_canvas: CanvasMeta
+
+
+def get_base_actions_frame(canvas: tk.Canvas) -> tk.Frame:
+    frame = tk.Frame(canvas, width=100, height=50)
+    go_button = tk.Button(frame, text="Перейти")
+    go_button.grid(row=0, column=0)
+    description_button = tk.Button(frame, text="Описание")
+    description_button.grid(row=0, column=1)
+    return frame
+
+
 class CanvasObject:
     DEFAULT_WIDTH = 2
     BOLD_WIDTH = 3
     canvas_tag = CanvasTag.BASE
 
-    def _put_on_canvas(self, canvas: tk.Canvas, objects: list[CanvasObjectInfo]):
+    def _put_on_canvas(
+        self,
+        canvas: tk.Canvas,
+        objects: list[CanvasObjectInfo],
+        add_hitbox: bool = True,
+    ):
+        created_objects: list[int] = []
         for item in objects:
             if "tags" in item.params:
                 tags = item.params["tags"]
@@ -61,9 +92,11 @@ class CanvasObject:
                 **item.params,
                 tags=tags,
             )
+            created_objects.append(item_id)
+            # if tags == CanvasTag.BASE:
+            #     CanvasMeta.bases.add(item_id)
             if item.caption is not None:
-                tmp = canvas.bbox(item_id)
-                top_left_x, top_left_y, bottom_right_x, bottom_right_y = tmp
+                top_left_x, top_left_y, bottom_right_x, bottom_right_y = canvas.bbox(item_id)
                 direction: Literal[1, -1] = 1
                 match item.caption.relative_pos:
                     case "right":
@@ -127,6 +160,13 @@ class CanvasObject:
                         start_x = cur_bbox[2]
                         if tk.W not in anchor:
                             anchor += tk.W
+        if add_hitbox:
+            hitbox = canvas.bbox(*created_objects)
+            canvas.create_rectangle(
+                hitbox,
+                outline="",
+                tags=CanvasTag.BASE_HITBOX,
+            )
     
     def _get_objects(
         self,
@@ -168,6 +208,34 @@ class CanvasObject:
         state: MapState,
     ):
         pass
+
+    @classmethod
+    def handle_base_click(cls, event: tk.Event):
+        canvas: tk.Canvas = event.widget  # type: ignore
+        canvas.delete(CanvasTag.POPUP)
+        canvas.create_window(
+            canvas.canvasx(event.x),
+            canvas.canvasy(event.y),
+            anchor=tk.N,
+            window=get_base_actions_frame(canvas),
+            tags=CanvasTag.POPUP,
+        )
+
+    @classmethod
+    def handle_outside_click(cls, event: tk.Event):
+        canvas: tk.Canvas = event.widget  # type: ignore
+        canvas.delete(CanvasTag.POPUP)
+
+    @classmethod
+    def handle_resizing(cls, event: tk.Event):
+        canvas: tk.Canvas = event.widget  # type: ignore
+        new_width = max(event.width, current_canvas.width)
+        new_height = max(event.height, current_canvas.height)
+        x_scale = new_width / current_canvas.background_hitbox_width
+        y_scale = new_height / current_canvas.background_hitbox_height
+        current_canvas.background_hitbox_width = new_width
+        current_canvas.background_hitbox_height = new_height
+        canvas.scale(current_canvas.background_hitbox_id, 0, 0, x_scale, y_scale)
 
 
 class TagsRegistry:
@@ -293,6 +361,7 @@ class Connection(CanvasObject):
                     ) if caption is not None else None,
                 ),
             ],
+            add_hitbox=False,
         )
 
     def _get_coords(self, _coords: tuple[float, float]):
@@ -377,6 +446,7 @@ class CrossedConnection(Connection):
                     caption=None,
                 ),
             ],
+            add_hitbox=False,
         )
 
     def _get_cross_coords(self, _coords: tuple[float, float]):
@@ -1064,9 +1134,46 @@ class Image(CanvasObject):
         )
 
 
-def sort_canvas_objects(canvas: tk.Canvas):
+def setup_canvas(canvas: ScrollableCanvas):
+    # add canvas background hitbox
+    global current_canvas
+    canvas_width = canvas.scrollregion[2]
+    canvas_height = canvas.scrollregion[3]
+    canvas_background_id = canvas.widget.create_rectangle(
+        canvas.scrollregion,
+        outline="",
+        tags=CanvasTag.BACKGROUND,
+    )
+    current_canvas = CanvasMeta(
+        width=canvas_width,
+        height=canvas_height,
+        background_hitbox_id=canvas_background_id,
+        background_hitbox_width=canvas_width,
+        background_hitbox_height=canvas_height,
+    )
+
+
+def configure_canvas(canvas: tk.Canvas):
+    # order canvas objects
     canvas.tag_raise(CanvasTag.PATH)
     canvas.tag_raise(CanvasTag.BASE)
     canvas.tag_raise(CanvasTag.TEXT_BACKGROUND)
     canvas.tag_raise(CanvasTag.TEXT)
     canvas.tag_raise(CanvasTag.CHARACTER)
+    canvas.tag_raise(CanvasTag.BACKGROUND)
+    canvas.tag_raise(CanvasTag.BASE_HITBOX)
+
+    # add events associated with clicks on bases
+    canvas.tag_bind(CanvasTag.BASE_HITBOX, "<Button-1>", CanvasObject.handle_base_click)
+    canvas.tag_bind(CanvasTag.BASE_HITBOX, "<Button-1>", CanvasObject.handle_base_click)
+    canvas.tag_bind(CanvasTag.BACKGROUND, "<Button-1>", CanvasObject.handle_outside_click)
+
+    # resize canvas background on windows resizing
+    canvas.bind("<Configure>", CanvasObject.handle_resizing, add="+")
+
+
+def draw_map(db: DataBase, map_id: int, canvas: ScrollableCanvas):
+    setup_canvas(canvas)
+    for row, column, cell in get_map(db, map_id):
+        TagsRegistry.parse_cell_and_put_on_canvas(canvas.widget, row, column, cell)
+    configure_canvas(canvas.widget)

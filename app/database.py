@@ -2,10 +2,6 @@ from dataclasses import asdict, dataclass
 import json
 from typing import Literal
 
-# import mysql.connector
-# from mysql.connector.pooling import PooledMySQLConnection
-# from mysql.connector.abstracts import MySQLConnectionAbstract
-# from mysql.connector.cursor import MySQLCursorDict
 import sqlite3
 
 from app.constants import INITIAL_MAP_NAME
@@ -56,7 +52,6 @@ def add_map(db: DataBase, name: str, width: int, height: int) -> int:
     )
     db.connection.commit()
     map_id: int = db.cursor.lastrowid  # type: ignore
-    db.cursor.close()
     return map_id
 
 def create_map_item_table(db: DataBase):
@@ -80,8 +75,13 @@ def create_map_item_table(db: DataBase):
 def drop_map_item_table(db: DataBase):
     db.cursor.execute(f"DROP TABLE IF EXISTS {MAP_ITEM_TABLE_NAME}")
 
+def clear_map_table(db: DataBase):
+    db.cursor.execute(f"DELETE FROM {MAP_TABLE_NAME}")
+    db.connection.commit()
+
 def recreate_map_item_table(db: DataBase):
     drop_map_item_table(db)
+    clear_map_table(db)
     create_map_item_table(db)
 
 def fill_map_item_table(db: DataBase, map_id: int):
@@ -109,7 +109,7 @@ def fill_map_item_table(db: DataBase, map_id: int):
                 ))
 
     db.cursor.executemany(sql, values)
-    db.cursor.execute(f"UPDATE {MAP_TABLE_NAME} SET initialized = 0 WHERE id = {map_id}")
+    db.cursor.execute(f"UPDATE {MAP_TABLE_NAME} SET initialized = 1 WHERE id = {map_id}")
     db.connection.commit()
 
 def get_map(db: DataBase, map_id: int) -> list[tuple[int, int, MapObjectInfo]]:
