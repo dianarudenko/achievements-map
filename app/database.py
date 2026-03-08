@@ -68,7 +68,7 @@ def create_map_item_table(db: DataBase):
             extra_params TEXT NULL,
             caption TEXT NULL,
             description TEXT NULL,
-            PRIMARY KEY (row, column)
+            PRIMARY KEY (row, column, map)
         )
         """
     )
@@ -183,14 +183,32 @@ def move_character(db: DataBase, map_id: int, row: int, column: int):
     )
     db.cursor.execute(
         f"""
-            SELECT * FROM {MAP_ITEM_TABLE_NAME} LIMIT 100
-        """
-    )
-    db.cursor.execute(
-        f"""
             UPDATE {MAP_ITEM_TABLE_NAME}
             SET state = '{MapState.CURRENT.value}'
             WHERE row = {row} AND column = {column} AND map = {map_id}
         """
+    )
+    db.connection.commit()
+
+def get_description(db: DataBase, map_id: int, row: int, column: int) -> str | None:
+    db.cursor.execute(
+        f"""
+            SELECT description FROM {MAP_ITEM_TABLE_NAME}
+            WHERE row = {row} AND column = {column} AND map = {map_id}
+        """
+    )
+    result = db.cursor.fetchone()
+    if result is not None:
+        return result[0]
+    return None
+
+def update_description(db: DataBase, map_id: int, row: int, column: int, description: str):
+    db.cursor.execute(
+        f"""
+            UPDATE {MAP_ITEM_TABLE_NAME}
+            SET description = ?
+            WHERE row = {row} AND column = {column} AND map = {map_id}
+        """,
+        [description],
     )
     db.connection.commit()
