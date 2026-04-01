@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -5,10 +7,9 @@ import math
 import os
 from typing import Any, Callable, Literal, Type
 import tkinter as tk
-from tkinter.font import Font
+import tkinter.font as tkFont
 
 from app.constants import (
-    DEFAULT_BASE_COLOR,
     DEFAULT_PATH_COLOR,
     HALF_TILE,
     SPRITES_PATH,
@@ -28,6 +29,7 @@ class ArrowPosition(str, Enum):
 
 class CanvasTag(str, Enum):
     BACKGROUND = "background"
+    CANVAS_HITBOX = "background_hitbox"
     TEXT_BACKGROUND = "text_background"
     TEXT = "text"
     BASE = "base"
@@ -43,6 +45,12 @@ class CanvasObjectInfo:
     coords: list[float]
     params: dict[str, Any]
     caption: CaptionInfo | None
+
+
+# @dataclass
+# class BaseInfo:
+#     bbox: tuple[float, float, float, float]
+#     base_obj: CanvasObject
 
 
 @dataclass
@@ -89,6 +97,26 @@ def get_base_actions_frame(movable: bool, frame: tk.Frame | None = None) -> tk.F
             go_button = tk.Button(frame, text="Перейти")
             go_button.grid(row=buttons_row, column=1)
             go_button.bind("<Button-1>", CanvasObject.move_character)
+        return frame
+    raise Exception("Chosen base not found")
+
+
+def get_extra_actions_frame() -> tk.Frame:
+    if current_canvas.chosen_base:
+        frame = tk.Frame(current_canvas.canvas)
+        base_coords = current_canvas.clickable_bases[current_canvas.chosen_base]
+        column = int((base_coords[0] + HALF_TILE) // TILE_SIZE)
+        row = int((base_coords[1] + HALF_TILE) // TILE_SIZE)
+        cell = database.get_cell(
+            db=current_canvas.db,
+            map_id=current_canvas.map_id,
+            row=row,
+            column=column,
+        )
+        if cell is not None:
+            not_visited_button = tk.Button(frame, text="Не посещена")
+            not_visited_button.grid(row=0, column=0)
+            not_visited_button.bind("<Button-1>", CanvasObject.make_not_visited)
         return frame
     raise Exception("Chosen base not found")
 
@@ -238,7 +266,19 @@ class CanvasObject:
         canvas_y = canvas.canvasy(event.y)
         base_hitbox_id: int = canvas.find_closest(canvas_x, canvas_y)[0]
         current_canvas.chosen_base = base_hitbox_id
-        movable = current_canvas.current_base_id != base_hitbox_id
+        base_coords = current_canvas.clickable_bases[base_hitbox_id]
+        column = int((base_coords[0] + HALF_TILE) // TILE_SIZE)
+        row = int((base_coords[1] + HALF_TILE) // TILE_SIZE)
+        cell = database.get_cell(
+            db=current_canvas.db,
+            map_id=current_canvas.map_id,
+            row=row,
+            column=column,
+        )
+        if cell is not None and cell.state == MapState.NOT_VISITED:
+            movable = True
+        else:
+            movable = False
         canvas.create_window(
             canvas_x,
             canvas_y,
@@ -246,6 +286,32 @@ class CanvasObject:
             window=get_base_actions_frame(movable=movable),
             tags=CanvasTag.POPUP,
         )
+
+    @classmethod
+    def handle_base_right_click(cls, event: tk.Event):
+        canvas: tk.Canvas = event.widget  # type: ignore
+        canvas.delete(CanvasTag.POPUP)
+        canvas_x = canvas.canvasx(event.x)
+        canvas_y = canvas.canvasy(event.y)
+        base_hitbox_id: int = canvas.find_closest(canvas_x, canvas_y)[0]
+        current_canvas.chosen_base = base_hitbox_id
+        base_coords = current_canvas.clickable_bases[base_hitbox_id]
+        column = int((base_coords[0] + HALF_TILE) // TILE_SIZE)
+        row = int((base_coords[1] + HALF_TILE) // TILE_SIZE)
+        cell = database.get_cell(
+            db=current_canvas.db,
+            map_id=current_canvas.map_id,
+            row=row,
+            column=column,
+        )
+        if cell is not None and cell.state == MapState.VISITED:
+            canvas.create_window(
+                canvas_x,
+                canvas_y,
+                anchor=tk.N,
+                window=get_extra_actions_frame(),
+                tags=CanvasTag.POPUP,
+            )
 
     @classmethod
     def handle_outside_click(cls, event: tk.Event):
@@ -263,6 +329,9 @@ class CanvasObject:
         current_canvas.background_hitbox_width = new_width
         current_canvas.background_hitbox_height = new_height
         canvas.scale(current_canvas.background_hitbox_id, 0, 0, x_scale, y_scale)
+        canvas.delete(CanvasTag.BACKGROUND)
+        put_background(canvas, (0, 0, int(new_width), int(new_height)))
+        order_canvas_objects(canvas)
 
     @classmethod
     def move_character(
@@ -270,7 +339,10 @@ class CanvasObject:
         event: tk.Event,
     ):
         canvas: tk.Canvas = current_canvas.canvas
-        if current_canvas.chosen_base is not None:
+        if current_canvas.current_base_id is not None and current_canvas.chosen_base is not None:
+            # get current base object
+            cur_base_bbox = current_canvas.clickable_bases[current_canvas.current_base_id]
+            # move character
             canvas.delete(CanvasTag.CHARACTER)
             base_coords = current_canvas.clickable_bases[current_canvas.chosen_base]
             cls.put_character(canvas, base_coords, current_canvas.chosen_base)
@@ -283,6 +355,28 @@ class CanvasObject:
                 column=column,
             )
             canvas.delete(CanvasTag.POPUP)
+            # delete current base
+            enclosed_objects = canvas.find_enclosed(*cur_base_bbox)
+            for obj_id in enclosed_objects:
+                if CanvasTag.BACKGROUND not in canvas.gettags(obj_id):
+                    canvas.delete(obj_id)
+            # put visited version of the base
+            column = int((cur_base_bbox[0] + HALF_TILE) // TILE_SIZE)
+            row = int((cur_base_bbox[1] + HALF_TILE) // TILE_SIZE)
+            updated_cell = database.get_cell(
+                db=current_canvas.db,
+                row=row,
+                column=column,
+                map_id=current_canvas.map_id,
+            )
+            if updated_cell is not None:
+                TagsRegistry.parse_cell_and_put_on_canvas(
+                    canvas=canvas,
+                    row=row,
+                    column=column,
+                    cell=updated_cell,
+                )
+            order_canvas_objects(canvas)
 
     @classmethod
     def edit_description(cls, event: tk.Event):
@@ -329,6 +423,35 @@ class CanvasObject:
             movable = current_canvas.current_base_id != current_canvas.chosen_base
             get_base_actions_frame(movable=movable, frame=frame)
 
+    @classmethod
+    def make_not_visited(cls, event: tk.Event):
+        if current_canvas.chosen_base is not None:
+            current_canvas.canvas.delete(CanvasTag.POPUP)
+            base_coords = current_canvas.clickable_bases[current_canvas.chosen_base]
+            column = int((base_coords[0] + HALF_TILE) // TILE_SIZE)
+            row = int((base_coords[1] + HALF_TILE) // TILE_SIZE)
+            database.change_state(
+                db=current_canvas.db,
+                map_id=current_canvas.map_id,
+                row=row,
+                column=column,
+                state=MapState.NOT_VISITED,
+            )
+            cell = database.get_cell(
+                db=current_canvas.db,
+                map_id=current_canvas.map_id,
+                row=row,
+                column=column,
+            )
+            if cell is not None:
+                TagsRegistry.parse_cell_and_put_on_canvas(
+                    canvas=current_canvas.canvas,
+                    row=row,
+                    column=column,
+                    cell=cell,
+                )
+                order_canvas_objects(current_canvas.canvas)
+
 
 class TagsRegistry:
     @dataclass
@@ -374,40 +497,39 @@ class TagsRegistry:
         canvas: tk.Canvas,
         row: int,
         column: int, 
-        cell: Literal[""] | None | MapObjectInfo,
+        cell: MapObjectInfo,
     ):
-        if cell:
-            topleft_x = TILE_SIZE * column
-            topleft_y = TILE_SIZE * row
-            object_params = {}
-            caption_params = {}
-            bold = False
-            if cell.bold:
-                bold = True
+        topleft_x = TILE_SIZE * column
+        topleft_y = TILE_SIZE * row
+        object_params = {}
+        caption_params = {}
+        bold = False
+        if cell.bold:
+            bold = True
+        else:
+            object_params["width"] = CanvasObject.DEFAULT_WIDTH
+        if cell.color is not None:
+            object_params["outline"] = cell.color
+            caption_params["fill"] = cell.color
+            bold = True
+        item = cls._get_object(cell.tag)
+        if item is not None:
+            if bold:
+                object_params["width"] = item.BOLD_WIDTH
+                caption_params["font"] = tkFont.Font(weight="bold")
             else:
-                object_params["width"] = CanvasObject.DEFAULT_WIDTH
-            if cell.color is not None:
-                object_params["outline"] = cell.color
-                caption_params["fill"] = cell.color
-                bold = True
-            item = cls._get_object(cell.tag)
-            if item is not None:
-                if bold:
-                    object_params["width"] = item.BOLD_WIDTH
-                    caption_params["font"] = Font(weight="bold")
-                else:
-                    object_params["width"] = item.DEFAULT_WIDTH
-                object_params.update(cell.extra_params)
-                if cell.caption is not None:
-                    for part in cell.caption:
-                        part.extra_params.update(caption_params)
-                item.put_on_canvas(
-                    canvas=canvas,
-                    coords=(topleft_x, topleft_y),
-                    extra_params=object_params,
-                    caption=cell.caption,
-                    state=cell.state,
-                )
+                object_params["width"] = item.DEFAULT_WIDTH
+            object_params.update(cell.extra_params)
+            if cell.caption is not None:
+                for part in cell.caption:
+                    part.extra_params.update(caption_params)
+            item.put_on_canvas(
+                canvas=canvas,
+                coords=(topleft_x, topleft_y),
+                extra_params=object_params,
+                caption=cell.caption,
+                state=cell.state,
+            )
 
 
 class Connection(CanvasObject):
@@ -755,7 +877,7 @@ class DownArrow(VerticalPath):
     pass
 
 
-@TagsRegistry.connect_to(MapTag.BASE, init_params={"color": DEFAULT_BASE_COLOR})
+# @TagsRegistry.connect_to(MapTag.BASE, init_params={"color": DEFAULT_BASE_COLOR})
 class CircleBase(CanvasObject):
     def __init__(self, color: str):
         self.color = color
@@ -860,7 +982,7 @@ class BigRhombBase(RhombBase):
     SIZE = (2, 3)
 
 
-@TagsRegistry.connect_to(MapTag.SQUARE, init_params={"color": DEFAULT_BASE_COLOR})
+# @TagsRegistry.connect_to(MapTag.SQUARE, init_params={"color": DEFAULT_BASE_COLOR})
 class SquareBase(CanvasObject):
     def __init__(self, color: str, prefix: str = "K"):
         self.prefix = prefix
@@ -940,7 +1062,7 @@ class BigSquaredCircleBase(CanvasObject):
         if caption is not None:
             for part in caption:
                 if "font" not in part.extra_params:
-                    part.extra_params["font"] = Font(weight="bold")
+                    part.extra_params["font"] = tkFont.Font(weight="bold")
         hitbox_id = self._put_on_canvas(
             canvas=canvas,
             objects=[
@@ -996,17 +1118,17 @@ class BigSquaredCircleBase(CanvasObject):
             )
 
 
-@TagsRegistry.connect_to(MapTag.START, init_params={"square_color": "#BEBE4C", "circle_color": "#FFFF66"})
-class StartBase(BigSquaredCircleBase):
-    pass
+# @TagsRegistry.connect_to(MapTag.START, init_params={"square_color": "#BEBE4C", "circle_color": "#FFFF66"})
+# class StartBase(BigSquaredCircleBase):
+#     pass
 
 
-@TagsRegistry.connect_to(MapTag.FINISH, init_params={"square_color": "#B62323", "circle_color": "#FF3333"})
-class FinishBase(BigSquaredCircleBase):
-    pass
+# @TagsRegistry.connect_to(MapTag.FINISH, init_params={"square_color": "#B62323", "circle_color": "#FF3333"})
+# class FinishBase(BigSquaredCircleBase):
+#     pass
 
 
-@TagsRegistry.connect_to(MapTag.STAR)
+# @TagsRegistry.connect_to(MapTag.STAR)
 class StarBase(CanvasObject):
     def __init__(
         self,
@@ -1082,7 +1204,7 @@ class StarBase(CanvasObject):
         if caption is not None:
             for part in caption:
                 if "font" not in part.extra_params:
-                    part.extra_params["font"] = Font(weight="bold")
+                    part.extra_params["font"] = tkFont.Font(weight="bold")
         hitbox_id = self._put_on_canvas(
             canvas=canvas,
             objects=[
@@ -1111,28 +1233,48 @@ class StarBase(CanvasObject):
 
 
 class Image(CanvasObject):
-    def __init__(self, path: str, mirror_x=False, mirror_y=False, rotate=False):
-        self.image_path = os.path.join(SPRITES_PATH, path)
-        self.mirror_x=mirror_x
-        self.mirror_y=mirror_y
-        self.rotate=rotate
-        self._set_image()
+    def __init__(
+        self,
+        path: str,
+        visited_path: str | None = None,
+        mirror_x: bool = False,
+        mirror_y: bool = False,
+        rotate: bool = False,
+        default_caption_font: dict | None = None,
+        caption_prefix: str = "",
+        tag: str | None = None,
+    ):
+        self.mirror_x = mirror_x
+        self.mirror_y = mirror_y
+        self.rotate = rotate
+        self.image = self._get_image(os.path.join(SPRITES_PATH, path))
+        if visited_path is not None:
+            self.visited_image = self._get_image(os.path.join(SPRITES_PATH, visited_path))
+        else:
+            self.visited_image = None
+        self.default_caption_font = default_caption_font
+        self.caption_prefix = caption_prefix
+        if tag is not None:
+            self.canvas_tag = tag
 
-    def _set_image(self):
-        image = tk.PhotoImage(file=self.image_path)
-        width = image.height() if self.rotate else image.width()
-        height = image.width() if self.rotate else image.height()
-        self.image = tk.PhotoImage(width=width, height=height)
+    def _get_image(self, path) -> tk.PhotoImage:
+        inital_image = tk.PhotoImage(file=path)
+        width = inital_image.height() if self.rotate else inital_image.width()
+        height = inital_image.width() if self.rotate else inital_image.height()
+        image = tk.PhotoImage(width=width, height=height)
         start_x, end_x, increment_x = (width - 1, -1, -1) if self.mirror_x else (0, width, 1)
         start_y, end_y, increment_y = (height - 1, -1, -1) if self.mirror_y else (0, height, 1)
 
-        data = ""
-        for col in range(start_y, end_y, increment_y):
-            data = data + "{"
-            for row in range(start_x, end_x, increment_x):
-                data = data + "#%02x%02x%02x " % image.get(col if self.rotate else row, row if self.rotate else col)
-            data = data + "} "
-        self.image.put(data, to=(0, 0, width, height))
+        for i, col in enumerate(range(start_x, end_x, increment_x)):
+            for j, row in enumerate(range(start_y, end_y, increment_y)):
+                img_col = row if self.rotate else col
+                img_row = col if self.rotate else row
+                color = inital_image.get(img_col, img_row)
+                transparency = inital_image.transparency_get(img_col, img_row)
+                data = "#%02x%02x%02x" % color
+                image.put(data, to=(i, j))
+                image.transparency_set(i, j, transparency)
+        return image
 
     def put_on_canvas(
         self,
@@ -1141,12 +1283,22 @@ class Image(CanvasObject):
         extra_params: dict[str, Any],
         caption: list[TextParams] | None,
         state: MapState,
+        add_hitbox: bool = True,
     ):
         params = {
-            "image": self.image,
+            "image": self.visited_image or self.image if state == MapState.VISITED else self.image,
             "anchor": "nw",
         }
         # params.update(extra_params)
+        if caption is not None:
+            if len(caption) > 0:
+                caption[0].text = self.caption_prefix + caption[0].text
+            if self.default_caption_font:
+                default_font = tkFont.Font(**self.default_caption_font)
+                for text in caption:
+                    caption_params = {"font": default_font}
+                    caption_params.update(text.extra_params)
+                    text.extra_params = caption_params
         hitbox_id = self._put_on_canvas(
             canvas=canvas,
             objects=[
@@ -1160,6 +1312,7 @@ class Image(CanvasObject):
                     ) if caption is not None else None,
                 )
             ],
+            add_hitbox=add_hitbox,
         )
         if state == MapState.CURRENT:
             self.put_character(
@@ -1167,10 +1320,83 @@ class Image(CanvasObject):
                 coords=(
                     coords[0],
                     coords[1],
-                    coords[0] + TILE_SIZE,
-                    coords[1] + TILE_SIZE,
+                    coords[0] + self.image.width(),
+                    coords[1] + self.image.height(),
                 ),
                 base_hitbox_id=hitbox_id,
+            )
+
+
+@TagsRegistry.connect_to(
+    MapTag.BASE,
+    init_params={"path": "white_circle_base.png", "visited_path": "yellow_circle_base.png"},
+)
+class ImageCircleBase(Image):
+    pass
+
+
+@TagsRegistry.connect_to(
+    MapTag.SQUARE,
+    init_params={
+        "path": "white_square_base.png",
+        "visited_path": "yellow_square_base.png",
+        "caption_prefix": "K",
+    },
+)
+class ImageSquareBase(Image):
+    pass
+
+
+@TagsRegistry.connect_to(
+    MapTag.START,
+    init_params={
+        "path": "start_finish_base.png",
+        "default_caption_font": {"weight": "bold"},
+    },
+)
+class ImageStartBase(Image):
+    pass
+
+
+@TagsRegistry.connect_to(
+    MapTag.FINISH,
+    init_params={
+        "path": "start_finish_base.png",
+        "default_caption_font": {"weight": "bold"},
+    },
+)
+class ImageFinishBase(Image):
+    pass
+
+
+@TagsRegistry.connect_to(
+    MapTag.STAR,
+    init_params={
+        "path": "white_star_base.png",
+        "visited_path": "yellow_star_base.png",
+        "default_caption_font": {"weight": "bold"},
+    },
+)
+class ImageStarBase(Image):
+    pass
+
+
+def put_background(canvas: tk.Canvas, region: tuple[int, int, int, int]):
+    background_tile = Image("background.png", tag=CanvasTag.BACKGROUND)
+    TagsRegistry.tag_to_object[MapTag.BACKGROUND] = TagsRegistry.ObjectInfo(
+        cls=Image,
+        init_params={},
+        object=background_tile,
+    )
+    for i in range(region[0], region[2], TILE_SIZE):
+        for j in range(region[1], region[3], TILE_SIZE):
+            background_tile.put_on_canvas(
+                canvas=canvas,
+                coords=(i, j),
+                extra_params={},
+                caption=None,
+                state=MapState.NOT_VISITED,
+                add_hitbox=False,
             )
 
 
@@ -1182,7 +1408,7 @@ def setup_canvas(db: database.DataBase, map_id: int, canvas: ScrollableCanvas):
     canvas_background_id = canvas.widget.create_rectangle(
         canvas.scrollregion,
         outline="",
-        tags=CanvasTag.BACKGROUND,
+        tags=CanvasTag.CANVAS_HITBOX,
     )
     current_canvas = CanvasMeta(
         canvas=canvas.widget,
@@ -1194,22 +1420,28 @@ def setup_canvas(db: database.DataBase, map_id: int, canvas: ScrollableCanvas):
         db=db,
         map_id=map_id,
     )
+    put_background(canvas.widget, canvas.scrollregion)
 
 
-def configure_canvas(canvas: tk.Canvas):
-    # order canvas objects
+def order_canvas_objects(canvas: tk.Canvas):
+    canvas.tag_raise(CanvasTag.BACKGROUND)
     canvas.tag_raise(CanvasTag.PATH)
     canvas.tag_raise(CanvasTag.BASE)
     canvas.tag_raise(CanvasTag.TEXT_BACKGROUND)
     canvas.tag_raise(CanvasTag.TEXT)
     canvas.tag_raise(CanvasTag.CHARACTER)
-    canvas.tag_raise(CanvasTag.BACKGROUND)
+    canvas.tag_raise(CanvasTag.CANVAS_HITBOX)
     canvas.tag_raise(CanvasTag.BASE_HITBOX)
+
+
+def configure_canvas(canvas: tk.Canvas):
+    # order canvas objects
+    order_canvas_objects(canvas)
 
     # add events associated with clicks on bases
     canvas.tag_bind(CanvasTag.BASE_HITBOX, "<Button-1>", CanvasObject.handle_base_click)
-    canvas.tag_bind(CanvasTag.BASE_HITBOX, "<Button-1>", CanvasObject.handle_base_click)
-    canvas.tag_bind(CanvasTag.BACKGROUND, "<Button-1>", CanvasObject.handle_outside_click)
+    canvas.tag_bind(CanvasTag.BASE_HITBOX, "<Button-3>", CanvasObject.handle_base_right_click)
+    canvas.tag_bind(CanvasTag.CANVAS_HITBOX, "<Button-1>", CanvasObject.handle_outside_click)
 
     # resize canvas background on window resizing
     canvas.bind("<Configure>", CanvasObject.handle_resizing, add="+")

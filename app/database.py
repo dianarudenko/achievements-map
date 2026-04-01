@@ -147,8 +147,8 @@ def db_connect() -> DataBase:
 
 def init_db(db: DataBase) -> int:
     create_map_table(db)
-    create_map_item_table(db)
-    # recreate_map_item_table(db)
+    # create_map_item_table(db)
+    recreate_map_item_table(db)
     map_id: int
     db.cursor.execute(f"SELECT id, initialized from {MAP_TABLE_NAME} WHERE name = '{INITIAL_MAP_NAME}'")
     result = db.cursor.fetchone()
@@ -190,6 +190,27 @@ def move_character(db: DataBase, map_id: int, row: int, column: int):
     )
     db.connection.commit()
 
+def get_cell(db: DataBase, map_id: int, row: int, column: int) -> MapObjectInfo | None:
+    db.cursor.execute(
+        f"""
+            SELECT * FROM {MAP_ITEM_TABLE_NAME}
+            WHERE row = {row} AND column = {column} AND map = {map_id}
+        """
+    )
+    result = db.cursor.fetchone()
+    if result is not None:
+        extra_params = result["extra_params"]
+        caption = result["caption"]
+        return MapObjectInfo(
+            tag=MapTag(result["tag"]),
+            state=MapState(result["state"]),
+            bold=bool(result["bold"]),
+            color=result["color"],
+            extra_params=json.loads(extra_params) if extra_params is not None else {},
+            caption=[TextParams(**t) for t in json.loads(caption)] if caption is not None else None,
+        )
+    return None
+
 def get_description(db: DataBase, map_id: int, row: int, column: int) -> str | None:
     db.cursor.execute(
         f"""
@@ -210,5 +231,16 @@ def update_description(db: DataBase, map_id: int, row: int, column: int, descrip
             WHERE row = {row} AND column = {column} AND map = {map_id}
         """,
         [description],
+    )
+    db.connection.commit()
+
+def change_state(db: DataBase, map_id: int, row: int, column: int, state: MapState):
+    db.cursor.execute(
+        f"""
+            UPDATE {MAP_ITEM_TABLE_NAME}
+            SET state = ?
+            WHERE row = {row} AND column = {column} AND map = {map_id}
+        """,
+        [state],
     )
     db.connection.commit()

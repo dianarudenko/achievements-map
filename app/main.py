@@ -8,7 +8,7 @@ sys.path.append(BASE_DIR)
 
 from app import map  # noqa: E402
 from app.canvas import draw_map  # noqa: E402
-from app.constants import BACKGROUND_COLOR, TILE_SIZE  # noqa: E402
+from app.constants import TILE_SIZE  # noqa: E402
 from app.database import db_connect, db_disconnect, init_db  # noqa: E402
 from app.widget import ResizableWidget, ScrollableCanvas  # noqa: E402
 
@@ -35,7 +35,6 @@ if __name__ == "__main__":
         width=window_width,
         height=window_height,
         scrollregion=(0, 0, map_size_x, map_size_y),
-        background=BACKGROUND_COLOR,
     )
 
     db = db_connect()
