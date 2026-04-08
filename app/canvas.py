@@ -279,11 +279,19 @@ class CanvasObject:
             movable = True
         else:
             movable = False
+        frame = get_base_actions_frame(movable=movable)
+        frame.update_idletasks()
+        frame_width = frame.winfo_reqwidth()
+        x = max(frame_width / 2, canvas_x)
+        if current_canvas.height - canvas_y < frame.winfo_reqheight() + 100:
+            anchor = tk.S
+        else:
+            anchor = tk.N
         canvas.create_window(
-            canvas_x,
+            x,
             canvas_y,
-            anchor=tk.N,
-            window=get_base_actions_frame(movable=movable),
+            anchor=anchor,
+            window=frame,
             tags=CanvasTag.POPUP,
         )
 
@@ -426,10 +434,16 @@ class CanvasObject:
     @classmethod
     def make_not_visited(cls, event: tk.Event):
         if current_canvas.chosen_base is not None:
-            current_canvas.canvas.delete(CanvasTag.POPUP)
+            canvas = current_canvas.canvas
+            canvas.delete(CanvasTag.POPUP)
             base_coords = current_canvas.clickable_bases[current_canvas.chosen_base]
             column = int((base_coords[0] + HALF_TILE) // TILE_SIZE)
             row = int((base_coords[1] + HALF_TILE) // TILE_SIZE)
+            # delete current base
+            enclosed_objects = canvas.find_enclosed(*base_coords)
+            for obj_id in enclosed_objects:
+                if CanvasTag.BACKGROUND not in canvas.gettags(obj_id):
+                    canvas.delete(obj_id)
             database.change_state(
                 db=current_canvas.db,
                 map_id=current_canvas.map_id,
@@ -445,12 +459,12 @@ class CanvasObject:
             )
             if cell is not None:
                 TagsRegistry.parse_cell_and_put_on_canvas(
-                    canvas=current_canvas.canvas,
+                    canvas=canvas,
                     row=row,
                     column=column,
                     cell=cell,
                 )
-                order_canvas_objects(current_canvas.canvas)
+                order_canvas_objects(canvas)
 
 
 class TagsRegistry:

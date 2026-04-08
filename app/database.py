@@ -147,8 +147,8 @@ def db_connect() -> DataBase:
 
 def init_db(db: DataBase) -> int:
     create_map_table(db)
-    # create_map_item_table(db)
-    recreate_map_item_table(db)
+    create_map_item_table(db)
+    # recreate_map_item_table(db)
     map_id: int
     db.cursor.execute(f"SELECT id, initialized from {MAP_TABLE_NAME} WHERE name = '{INITIAL_MAP_NAME}'")
     result = db.cursor.fetchone()
