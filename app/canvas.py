@@ -275,7 +275,7 @@ class CanvasObject:
             row=row,
             column=column,
         )
-        if cell is not None and cell.state == MapState.NOT_VISITED:
+        if cell is not None and cell.state != MapState.CURRENT:
             movable = True
         else:
             movable = False
